@@ -48,6 +48,14 @@ void checkVolumeButtons();
 void setup() {
     Serial.begin(115200);
     
+    // Initialize PSRAM for m3u8 support
+    Serial.println("Initializing PSRAM...");
+    if (psramInit()) {
+        Serial.println("PSRAM initialized successfully!");
+    } else {
+        Serial.println("PSRAM initialization failed!");
+    }
+    
     // Connect to WiFi
     Serial.println("Connecting to WiFi...");
     WiFi.begin(ssid.c_str(), password.c_str());
@@ -73,13 +81,16 @@ void setup() {
     audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
     audio.setVolume(6); // 设置音频音量（0...21）
     
-    // Use a reliable HTTP stream URL (HTTPS may cause SSL issues)
+    // Increase SSL timeout for m3u8 parsing
+    audio.setConnectionTimeout(5000, 10000); // Increase SSL timeout to 10 seconds
+    
+    // Use a reliable HTTP stream URL (HTTPS may cause SSL issues for m3u8)
     Serial.println("Connecting to audio stream...");
     
-    // 音乐链接
+    // 音乐链接 - 使用HTTP的m3u8链接或直接MP3链接，HTTPS的m3u8可能有解析问题
     // 示例: audio.connecttohost("http://your-stream-url.mp3");
-    audio.connecttohost("https://lhttp-hw.qtfm.cn/live/647/64k.mp3");
-    // audio.connecttohost("https://rscdn.ajmide.com/r_69/69.m3u8");
+    audio.connecttohost("https://lhttp-hw.qtfm.cn/live/647/64k.mp3"); // 切换回可靠的HTTPS MP3链接
+    // audio.connecttohost("https://rscdn.ajmide.com/r_69/69.m3u8"); // 暂时注释掉，HTTPS m3u8可能存在解析问题
     // audio.connecttohost("http://icecast.omroep.nl/radio2-bb-mp3");
     
     // Update display to show final status after setup completion
