@@ -1,6 +1,6 @@
 #include "Arduino.h"
 #include "WiFi.h"
-#include "Audio.h"
+#include "Audio.h" // 包含音频库ESP32-audioI2S 3.0.0
 
 // Digital I/O used - using your existing wiring configuration
 #define I2S_DOUT      7
