@@ -272,23 +272,23 @@ void updateDisplay() {
         display.print(stationName);
     }
     
-    // 分隔线（底部）
-    display.drawHLine(0, 38, 128);
+    // 分隔线（底部） - 向下移动
+    display.drawHLine(0, 50, 128);
     
-    // Bottom bar with playback time and system time
+    // Bottom bar with playback time and system time - moved closer to bottom
     display.setFont(u8g2_font_6x10_tf);
     
-    // Playback time (left)
+    // Playback time (left) - moved down to y=60
     unsigned long playbackTime = currentMillis - playbackStartTime;
     char playbackTimeStr[10];
     int hours = (playbackTime / 3600000) % 24;
     int minutes = (playbackTime / 60000) % 60;
     int seconds = (playbackTime / 1000) % 60;
     sprintf(playbackTimeStr, "%02d:%02d:%02d", hours, minutes, seconds);
-    display.setCursor(0, 50);
+    display.setCursor(0, 60);
     display.print(playbackTimeStr);
     
-    // System time (right) - using NTP synced time
+    // System time (right) - using NTP synced time - moved down to y=60
     char systemTimeStr[9];
     
     if (timeSynced && getLocalTime(&timeinfo)) {
@@ -304,7 +304,7 @@ void updateDisplay() {
     }
     
     int systemTimeWidth = display.getUTF8Width(systemTimeStr);
-    display.setCursor(128 - systemTimeWidth, 50);
+    display.setCursor(128 - systemTimeWidth, 60);
     display.print(systemTimeStr);
     
     display.sendBuffer();
