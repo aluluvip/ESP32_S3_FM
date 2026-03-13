@@ -3,6 +3,7 @@
 #include "Audio.h" // 包含音频库ESP32-audioI2S 3.0.0
 #include "U8g2lib.h" // 包含U8g2 OLED库
 #include "time.h" // 包含时间库用于NTP同步
+#include "Wire.h" // 包含硬件 I2C 库
 
 // Digital I/O used - using your existing wiring configuration
 #define I2S_DOUT      7
@@ -13,14 +14,14 @@
 #define VOLUME_UP_PIN   40  // GPIO40 - Volume up button
 #define VOLUME_DOWN_PIN 39  // GPIO39 - Volume down button (short press: decrease volume, long press: mute)
 
-// OLED configuration
-#define OLED_SDA 41      // GPIO41 - OLED SDA pin
-#define OLED_SCL 42      // GPIO42 - OLED SCL pin
+// OLED configuration - Hardware I2C
+#define OLED_SDA 47      // GPIO41 - OLED SDA pin
+#define OLED_SCL 21      // GPIO21 - OLED SCL pin
 #define SCREEN_WIDTH 128 // OLED screen width
 #define SCREEN_HEIGHT 64 // OLED screen height
 
-// Initialize U8g2 library for SSD1306 OLED
-U8G2_SSD1306_128X64_NONAME_F_SW_I2C display(U8G2_R0, OLED_SCL, OLED_SDA, U8X8_PIN_NONE);
+// Initialize U8g2 library for SSD1306 OLED with Hardware I2C
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C display(U8G2_R0, /* reset=*/U8X8_PIN_NONE);
 
 // Your existing WiFi credentials
 String ssid =     "lulu";
@@ -36,7 +37,7 @@ struct AudioStream {
 
 // Audio stream URLs with names
 AudioStream audioStreams[] = {
-    {"经典音乐", "https://lhttp-hw.qtfm.cn/live/647/64k.mp3"},
+    {"亳州交通音乐广播经典音乐", "https://lhttp-hw.qtfm.cn/live/647/64k.mp3"},
     {"新闻广播", "https://lhttp-hw.qtfm.cn/live/15318194/64k.mp3"},
     {"流行音乐", "https://lhttp-hw.qtfm.cn/live/20500104/64k.mp3"},
     {"亳州交通音乐广播FM107.2", "https://lhttp-hw.qtfm.cn/live/20212419/64k.mp3"},
@@ -56,16 +57,15 @@ bool timeSynced = false;
 
 // Playback and time variables
 unsigned long playbackStartTime = 0;
-unsigned long lastTimeUpdate = 0;
-const unsigned long TIME_UPDATE_INTERVAL = 1000;  // Update time every 1 second
 unsigned long lastNtpSync = 0;
 const unsigned long NTP_SYNC_INTERVAL = 3600000;  // Sync time every hour
 
+// WiFi reconnection variables
+unsigned long lastWifiCheck = 0;
+const unsigned long WIFI_CHECK_INTERVAL = 5000;  // Check WiFi every 5 seconds
+
 // Scrolling text variables
-unsigned long lastScrollUpdate = 0;
-const unsigned long SCROLL_UPDATE_INTERVAL = 200;  // Scroll speed
 int scrollOffset = 0;
-int maxScrollOffset = 0;
 
 // Button timing constants
 const unsigned long LONG_PRESS_THRESHOLD = 800;  // 800ms for long press detection
@@ -83,10 +83,19 @@ void displayUpdateTask(void *pvParameters);
 // FreeRTOS task implementation for display updates
 void displayUpdateTask(void *pvParameters) {
     static int lastSecond = -1;
-    
+
     while (true) {
         unsigned long currentMillis = millis();
-        
+
+        // Check WiFi connection and reconnect if needed
+        if (currentMillis - lastWifiCheck > WIFI_CHECK_INTERVAL) {
+            if (WiFi.status() != WL_CONNECTED) {
+                Serial.println("WiFi disconnected! Reconnecting...");
+                WiFi.reconnect();
+            }
+            lastWifiCheck = currentMillis;
+        }
+
         // Only update when the second changes, once per second
         int currentSecond = (currentMillis / 1000) % 60;
         if (currentSecond != lastSecond) {
@@ -95,7 +104,7 @@ void displayUpdateTask(void *pvParameters) {
             updateDisplay();
             lastSecond = currentSecond;
         }
-        
+
         // Update NTP time periodically
         if (currentMillis - lastNtpSync > NTP_SYNC_INTERVAL) {
             configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
@@ -104,8 +113,8 @@ void displayUpdateTask(void *pvParameters) {
             }
             lastNtpSync = currentMillis;
         }
-        
-        vTaskDelay(50 / portTICK_PERIOD_MS); // Delay 50ms to reduce CPU usage
+
+        vTaskDelay(100 / portTICK_PERIOD_MS); // Delay 100ms to reduce CPU usage
     }
 }
 
@@ -120,17 +129,27 @@ void setup() {
         Serial.println("PSRAM initialization failed!");
     }
     
-    // Connect to WiFi
+    // Connect to WiFi with timeout
     Serial.println("Connecting to WiFi...");
     WiFi.begin(ssid.c_str(), password.c_str());
-    while (WiFi.status() != WL_CONNECTED) {
+    
+    unsigned long wifiStart = millis();
+    const unsigned long WIFI_TIMEOUT = 10000; // 10 seconds timeout
+    
+    while (WiFi.status() != WL_CONNECTED && millis() - wifiStart < WIFI_TIMEOUT) {
         delay(500);
         Serial.print(".");
     }
-    Serial.println("");
-    Serial.println("WiFi connected");
-    Serial.print("IP address: ");
-    Serial.println(WiFi.localIP());
+    
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("");
+        Serial.println("WiFi connected");
+        Serial.print("IP address: ");
+        Serial.println(WiFi.localIP());
+    } else {
+        Serial.println("");
+        Serial.println("WiFi connection failed! Will retry in background...");
+    }
     
     // Initialize NTP time synchronization
     configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
@@ -153,7 +172,8 @@ void setup() {
         Serial.println("NTP time synchronization failed!");
     }
     
-    // Initialize OLED display first
+    // Initialize OLED display with Hardware I2C
+    Wire.begin(OLED_SDA, OLED_SCL);
     display.begin();
     display.enableUTF8Print(); // Enable UTF-8 support for Chinese characters
     display.setContrast(255); // Set maximum contrast
@@ -165,7 +185,7 @@ void setup() {
     // 使用您现有的引脚配置设置音频
     audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
     audio.setVolume(6); // 设置音频音量（0...21）
-    
+
     // Increase SSL timeout for m3u8 parsing
     audio.setConnectionTimeout(5000, 10000); // Increase SSL timeout to 10 seconds
     
@@ -175,10 +195,7 @@ void setup() {
     // Connect to the first audio stream in the list
     audio.connecttohost(audioStreams[currentStreamIndex].url);
     Serial.printf("Connected to stream %d: %s (%s)\n", currentStreamIndex + 1, audioStreams[currentStreamIndex].name, audioStreams[currentStreamIndex].url);
-    
-    // Update display to show final status after setup completion
-    updateDisplay();
-    
+
     // Create display update task after all initializations
     // This task will run in parallel with the main loop, avoiding audio stutter
     xTaskCreate(
@@ -196,117 +213,137 @@ void setup() {
 // Function to update OLED display with current status
 void updateDisplay() {
     display.clearBuffer();
-    
+
     unsigned long currentMillis = millis();
     int currentVolume = audio.getVolume();
-    
-    // Normal display mode - always show this layout
-    // Top bar with WiFi, channel, and volume
-    display.setFont(u8g2_font_6x10_tf);
-    
-    // WiFi status (left)
-    // Set iconic font for WiFi icon
+
+    // ========== 外边框 (1px) ==========
+    display.drawFrame(1, 1, 126, 62);
+
+    // ========== 顶部状态栏 ==========
+
+    // WiFi 状态 (左侧) - 向右移动 1px
     display.setFont(u8g2_font_open_iconic_www_1x_t);
-    
-    // Print WiFi icon (0x48 is the WiFi icon in open_iconic_www fonts)
-    display.setCursor(0, 10);
-    display.print((char)0x48);
-    
-    // Channel info (center)
-    // Set back to ASCII font for channel info
+    display.setCursor(4, 11);
+    if (WiFi.status() == WL_CONNECTED) {
+        display.print((char)0x48); // WiFi 图标
+    } else {
+        display.print((char)0x42); // 断开连接图标
+    }
+
+    // 频道信息 (中央) - 使用较小字体
     display.setFont(u8g2_font_6x10_tf);
-    
-    char channelStr[6];
-    sprintf(channelStr, "%02d/%02d", currentStreamIndex + 1, NUM_STREAMS);
+    char channelStr[8];
+    sprintf(channelStr, "CH.%02d", currentStreamIndex + 1);
     int channelWidth = display.getUTF8Width(channelStr);
-    display.setCursor((128 - channelWidth) / 2, 10);
+    display.setCursor((128 - channelWidth) / 2, 11);
     display.print(channelStr);
-    
-    // Volume info (right)
-    // Set iconic font for speaker icon - using U8g2 font instead of U8x8
-    display.setFont(u8g2_font_open_iconic_play_1x_t);
-    
-    // Print speaker icon (0x40 is the speaker icon in open_iconic_play fonts)
-    display.setCursor(108, 10); // Position before volume number
-    display.print((char)0x50);
-    
-    // Set back to original font for volume number
+
+    // 音量数值 (右侧)
     display.setFont(u8g2_font_6x10_tf);
-    
-    // Print volume number
     char volumeStr[4];
-    sprintf(volumeStr, "%02d", currentVolume);
-    display.setCursor(117, 10); // Position for volume number
+    sprintf(volumeStr, "%2d", currentVolume);
+    int volumeWidth = display.getUTF8Width(volumeStr);
+    display.setCursor(128 - volumeWidth - 3, 11);
     display.print(volumeStr);
-    
-    // Horizontal line separator
-    display.drawHLine(0, 12, 128);
-    
-    // Channel name with scrolling (middle section)
+
+    // 顶栏分割线
+    display.drawHLine(1, 14, 126);
+
+    // ========== 电台名称区域 (中央) ==========
     display.setFont(u8g2_font_wqy12_t_gb2312);
     const char* stationName = audioStreams[currentStreamIndex].name;
     int nameWidth = display.getUTF8Width(stationName);
-    
-    // Calculate max scroll offset if not already done
-    if (maxScrollOffset == 0 && nameWidth > 128) {
-        maxScrollOffset = nameWidth - 128 + 10; // Add some padding
-    }
-    
-    // Update scroll offset
-    if (currentMillis - lastScrollUpdate > SCROLL_UPDATE_INTERVAL && nameWidth > 128) {
-        scrollOffset++;
-        if (scrollOffset > maxScrollOffset) {
+
+    // 边距设置（左右各留 4px）
+    const int sideMargin = 4;
+    const int textGap = 10; // 两个文本之间的间隙
+    int availableWidth = 128 - sideMargin * 2; // 120px
+
+    // 判断是否需要滚动
+    bool needScroll = (nameWidth > availableWidth);
+
+    // 需要滚动时，每次调用更新位置（每秒更新一次）
+    if (needScroll) {
+        scrollOffset += 2; // 每次滚动 2px
+        // 循环滚动：当文本完全滚出左边界后重置
+        // 总滚动距离 = 文字宽度 + 间隙 + 屏幕可用宽度
+        int totalScroll = nameWidth + textGap + availableWidth;
+        if (scrollOffset >= totalScroll) {
             scrollOffset = 0;
         }
-        lastScrollUpdate = currentMillis;
     }
-    
-    // Draw scrolling text
-    int xPos = -scrollOffset;
-    display.setCursor(xPos, 32);
-    display.print(stationName);
-    
-    // Draw scrolling text again if it's wrapping
-    if (nameWidth > 128 && xPos + nameWidth < 128) {
-        display.setCursor(xPos + nameWidth + 10, 32); // Add gap between repetitions
+
+    // 绘制电台名称（往下移动 4px）
+    int yPos = 34;
+
+    if (!needScroll) {
+        // 短名称居中显示
+        display.setCursor((128 - nameWidth) / 2, yPos);
         display.print(stationName);
+    } else {
+        // 长名称滚动显示：从右向左无缝循环滚动
+        // 循环周期 = 文字宽度 + 间隙
+        int cycleWidth = nameWidth + textGap;
+        
+        // 计算当前在循环中的位置
+        int posInCycle = scrollOffset % cycleWidth;
+        
+        // 文本 1 起始位置：从右侧进入
+        // posInCycle=0 时，文本**右边缘**在 x=124，即左边缘在 x=124-nameWidth
+        int xPos1 = (128 - sideMargin - nameWidth) - posInCycle;
+        
+        // 设置裁剪区域，确保文本不会超出屏幕
+        display.setClipWindow(sideMargin, 0, 128 - sideMargin, 64);
+        
+        // 绘制文本 1
+        display.setCursor(xPos1, yPos);
+        display.print(stationName);
+        
+        // 绘制文本 2（在文本 1 右边，形成循环）
+        int xPos2 = xPos1 + cycleWidth;
+        // 只有当文本 2 部分在屏幕内时才绘制
+        if (xPos2 < 128 - sideMargin) {
+            display.setCursor(xPos2, yPos);
+            display.print(stationName);
+        }
+        
+        // 恢复全屏显示
+        display.setMaxClipWindow();
     }
+
+    // ========== 底部信息栏 ==========
+    // 绘制分隔线
+    display.drawHLine(1, 46, 126);
     
-    // 分隔线（底部） - 向下移动
-    display.drawHLine(0, 50, 128);
-    
-    // Bottom bar with playback time and system time - moved closer to bottom
+    // 星期几 (左侧) - 英文显示，与时间字体一致
     display.setFont(u8g2_font_6x10_tf);
-    
-    // Playback time (left) - moved down to y=60
-    unsigned long playbackTime = currentMillis - playbackStartTime;
-    char playbackTimeStr[10];
-    int hours = (playbackTime / 3600000) % 24;
-    int minutes = (playbackTime / 60000) % 60;
-    int seconds = (playbackTime / 1000) % 60;
-    sprintf(playbackTimeStr, "%02d:%02d:%02d", hours, minutes, seconds);
-    display.setCursor(0, 60);
-    display.print(playbackTimeStr);
-    
-    // System time (right) - using NTP synced time - moved down to y=60
-    char systemTimeStr[9];
-    
+    const char* weekdays[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
     if (timeSynced && getLocalTime(&timeinfo)) {
-        // Format time as HH:MM:SS
+        display.setCursor(4, 58);
+        display.print(weekdays[timeinfo.tm_wday]);
+    } else {
+        display.setCursor(4, 58);
+        display.print("     ");
+    }
+
+    // 系统时间 (右侧) - 只显示时间，带秒
+    char systemTimeStr[9];
+    if (timeSynced && getLocalTime(&timeinfo)) {
         strftime(systemTimeStr, sizeof(systemTimeStr), "%H:%M:%S", &timeinfo);
     } else {
-        // Fallback to millis() if NTP sync failed
         unsigned long systemTime = currentMillis / 1000;
         int sysHours = (systemTime / 3600) % 24;
         int sysMinutes = (systemTime / 60) % 60;
         int sysSeconds = systemTime % 60;
         sprintf(systemTimeStr, "%02d:%02d:%02d", sysHours, sysMinutes, sysSeconds);
     }
-    
+
+    display.setFont(u8g2_font_6x10_tf);
     int systemTimeWidth = display.getUTF8Width(systemTimeStr);
-    display.setCursor(128 - systemTimeWidth, 60);
+    display.setCursor(128 - systemTimeWidth - 4, 58);
     display.print(systemTimeStr);
-    
+
     display.sendBuffer();
 }
 
@@ -320,126 +357,115 @@ void checkVolumeButtons() {
     static bool volumeDownPressed = false;
     static unsigned long volumeDownPressStartTime = 0;
     static bool muteTriggered = false;
-    
-    // Double-click detection variables
+
+    // Click detection variables
     static unsigned long lastVolumeUpClickTime = 0;
     static unsigned long lastVolumeDownClickTime = 0;
     static int volumeUpClickCount = 0;
     static int volumeDownClickCount = 0;
-    
-    // Volume adjustment delay variables
-    static bool volumeUpNeedsAdjust = false;
-    static bool volumeDownNeedsAdjust = false;
-    static unsigned long volumeUpAdjustTime = 0;
-    static unsigned long volumeDownAdjustTime = 0;
-    
+
+    // Action pending flags
+    static bool volumeUpPending = false;
+    static bool volumeDownPending = false;
+
     int currentVolume = audio.getVolume();
     unsigned long currentMillis = millis();
-    
+
     // Check volume up button with debounce
     bool currentUpState = !digitalRead(VOLUME_UP_PIN); // Active low
     if (currentUpState != lastUpState) {
         lastVolumeUpDebounce = currentMillis;
         lastUpState = currentUpState;
     }
-    
+
     if (currentMillis - lastVolumeUpDebounce > DEBOUNCE_DELAY) {
         if (currentUpState && !volumeUpPressed) {
-            // Button just pressed
+            // Button just pressed - increment click count
             volumeUpPressed = true;
-            
-            // Increase click count for double-click detection
             volumeUpClickCount++;
+            lastVolumeUpClickTime = currentMillis;
             
-            if (volumeUpClickCount == 1) {
-                // First click, start timer
-                lastVolumeUpClickTime = currentMillis;
-                volumeUpNeedsAdjust = true;
-                volumeUpAdjustTime = currentMillis;
-            } else if (volumeUpClickCount == 2) {
-                // Double click detected
-                Serial.println("Double click up - Next stream");
-                switchStream(1); // Switch to next stream
-                volumeUpClickCount = 0; // Reset click count
-                volumeUpNeedsAdjust = false; // Cancel volume adjustment
-            }
+            // Start timer to wait for potential double-click
+            volumeUpPending = true;
         } else if (!currentUpState && volumeUpPressed) {
             // Button released
             volumeUpPressed = false;
         }
     }
-    
-    // Handle volume up adjustment after debouncing for double-click
-    if (volumeUpNeedsAdjust && currentMillis - volumeUpAdjustTime > DOUBLE_CLICK_THRESHOLD) {
-        // Single click confirmed, adjust volume
-        if (currentVolume < 21) {
-            audio.setVolume(++currentVolume);
-            Serial.printf("Volume increased to: %d\n", currentVolume);
-            updateDisplay();
+
+    // Check for double-click or execute single-click action
+    if (volumeUpPending && currentMillis - lastVolumeUpClickTime > DOUBLE_CLICK_THRESHOLD) {
+        if (volumeUpClickCount >= 2) {
+            // Double click detected - adjust volume up
+            if (currentVolume < 21) {
+                audio.setVolume(++currentVolume);
+                Serial.printf("Volume increased to: %d (double-click)\n", currentVolume);
+            }
+        } else {
+            // Single click confirmed - switch to next stream
+            Serial.println("Single click up - Next stream");
+            switchStream(1);
         }
-        volumeUpNeedsAdjust = false;
+        // Reset state
+        volumeUpPending = false;
         volumeUpClickCount = 0;
     }
-    
+
     // Check volume down button with debounce
     bool currentDownState = !digitalRead(VOLUME_DOWN_PIN); // Active low
     if (currentDownState != lastDownState) {
         lastVolumeDownDebounce = currentMillis;
         lastDownState = currentDownState;
     }
-    
+
     if (currentMillis - lastVolumeDownDebounce > DEBOUNCE_DELAY) {
         if (currentDownState && !volumeDownPressed) {
-            // Button just pressed
+            // Button just pressed - increment click count
             volumeDownPressed = true;
+            volumeDownClickCount++;
+            lastVolumeDownClickTime = currentMillis;
+            
+            // Start timer to wait for potential double-click
+            volumeDownPending = true;
+            
+            // Record press start time for long-press mute
             volumeDownPressStartTime = currentMillis;
             muteTriggered = false;
-            
-            // Increase click count for double-click detection
-            volumeDownClickCount++;
-            
-            if (volumeDownClickCount == 1) {
-                // First click, start timer
-                lastVolumeDownClickTime = currentMillis;
-                volumeDownNeedsAdjust = true;
-                volumeDownAdjustTime = currentMillis;
-            } else if (volumeDownClickCount == 2) {
-                // Double click detected
-                Serial.println("Double click down - Previous stream");
-                switchStream(-1); // Switch to previous stream
-                volumeDownClickCount = 0; // Reset click count
-                volumeDownNeedsAdjust = false; // Cancel volume adjustment
-            }
         } else if (!currentDownState && volumeDownPressed) {
             // Button released
             volumeDownPressed = false;
         }
     }
-    
-    // Handle volume down adjustment after debouncing for double-click
-    if (volumeDownNeedsAdjust && currentMillis - volumeDownAdjustTime > DOUBLE_CLICK_THRESHOLD) {
-        // Single click confirmed, adjust volume
-        if (currentVolume > 0) {
-            audio.setVolume(--currentVolume);
-            Serial.printf("Volume decreased to: %d\n", currentVolume);
-            updateDisplay();
+
+    // Check for double-click or execute single-click action
+    if (volumeDownPending && currentMillis - lastVolumeDownClickTime > DOUBLE_CLICK_THRESHOLD) {
+        if (volumeDownClickCount >= 2) {
+            // Double click detected - adjust volume down
+            if (currentVolume > 0) {
+                audio.setVolume(--currentVolume);
+                Serial.printf("Volume decreased to: %d (double-click)\n", currentVolume);
+            }
+        } else {
+            // Single click confirmed - switch to previous stream
+            Serial.println("Single click down - Previous stream");
+            switchStream(-1);
         }
-        volumeDownNeedsAdjust = false;
+        // Reset state
+        volumeDownPending = false;
         volumeDownClickCount = 0;
     }
-    
-    // Check for long press (non-blocking)
+
+    // Check for long press (non-blocking) - only for volume down button
     if (currentDownState && volumeDownPressed && !muteTriggered) {
         if (currentMillis - volumeDownPressStartTime >= LONG_PRESS_THRESHOLD) {
             // Long press: mute (set volume to 0)
             if (currentVolume > 0) {
                 audio.setVolume(0);
                 Serial.println("Volume muted (long press)");
-                updateDisplay();
                 muteTriggered = true;
             }
-            // Cancel volume adjustment and double-click detection
-            volumeDownNeedsAdjust = false;
+            // Cancel pending action
+            volumeDownPending = false;
             volumeDownClickCount = 0;
         }
     }
@@ -464,13 +490,12 @@ void switchStream(int direction) {
     
     // Reset playback start time
     playbackStartTime = millis();
-    
-    // Reset scrolling variables
+
+    // Reset scroll offset when switching stations
     scrollOffset = 0;
-    maxScrollOffset = 0;
-    
-    // Show stream change on display
-    updateDisplay();
+
+    // Display will be updated by FreeRTOS task automatically
+    Serial.println("Stream switched!");
 }
 
 
