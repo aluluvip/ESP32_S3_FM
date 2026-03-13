@@ -4,6 +4,9 @@
 #include "U8g2lib.h" // 包含U8g2 OLED库
 #include "time.h" // 包含时间库用于NTP同步
 #include "Wire.h" // 包含硬件 I2C 库
+#include <WebServer.h>
+#include <WiFiManager.h> // WiFi 配置管理
+#include <ArduinoJson.h>
 
 // Digital I/O used - using your existing wiring configuration
 #define I2S_DOUT      7
@@ -26,9 +29,8 @@
 // Initialize U8g2 library for SSD1306 OLED with Hardware I2C
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C display(U8G2_R0, /* reset=*/U8X8_PIN_NONE);
 
-// Your existing WiFi credentials
-String ssid =     "lulu";
-String password = "19941024";
+// WiFiManager for WiFi configuration
+WiFiManager wifiManager;
 
 Audio audio;
 
@@ -134,28 +136,25 @@ void setup() {
     } else {
         Serial.println("PSRAM initialization failed!");
     }
+
+    // WiFiManager - Auto connect or start config portal
+    Serial.println("Starting WiFiManager...");
+    wifiManager.setConfigPortalTimeout(180); // 3 minutes timeout for config portal
+    wifiManager.setDarkMode(true);
     
-    // Connect to WiFi with timeout
-    Serial.println("Connecting to WiFi...");
-    WiFi.begin(ssid.c_str(), password.c_str());
+    // Add custom parameters
+    WiFiManagerParameter customText("<p style='text-align:center;color:#4CAF50;'>ESP32 FM 收音机</p>");
+    wifiManager.addParameter(&customText);
     
-    unsigned long wifiStart = millis();
-    const unsigned long WIFI_TIMEOUT = 10000; // 10 seconds timeout
-    
-    while (WiFi.status() != WL_CONNECTED && millis() - wifiStart < WIFI_TIMEOUT) {
-        delay(500);
-        Serial.print(".");
+    if (!wifiManager.autoConnect("ESP32-FM-Config", "12345678")) {
+        Serial.println("WiFiManager: Failed to connect or timeout");
+        delay(3000);
+        ESP.restart();
     }
     
-    if (WiFi.status() == WL_CONNECTED) {
-        Serial.println("");
-        Serial.println("WiFi connected");
-        Serial.print("IP address: ");
-        Serial.println(WiFi.localIP());
-    } else {
-        Serial.println("");
-        Serial.println("WiFi connection failed! Will retry in background...");
-    }
+    Serial.println("WiFi connected!");
+    Serial.print("IP address: ");
+    Serial.println(WiFi.localIP());
     
     // Initialize NTP time synchronization
     configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
@@ -486,7 +485,7 @@ void checkVolumeButtons() {
 void switchStream(int direction) {
     // Stop current audio stream
     audio.stopSong();
-    
+
     // Calculate new stream index
     currentStreamIndex += direction;
     if (currentStreamIndex >= NUM_STREAMS) {
@@ -494,25 +493,39 @@ void switchStream(int direction) {
     } else if (currentStreamIndex < 0) {
         currentStreamIndex = NUM_STREAMS - 1;
     }
-    
+
     // Connect to new stream
     Serial.printf("Switching to stream %d: %s (%s)\n", currentStreamIndex + 1, audioStreams[currentStreamIndex].name, audioStreams[currentStreamIndex].url);
     audio.connecttohost(audioStreams[currentStreamIndex].url);
-    
+
     // Reset playback start time
     playbackStartTime = millis();
 
     // Reset scroll offset when switching stations
     scrollOffset = 0;
 
-    // Display will be updated by FreeRTOS task automatically
-    Serial.println("Stream switched!");
+    // Show stream change on display
+    updateDisplay();
 }
 
 
+
+// Global variables for audio monitoring
+unsigned long lastReconnectTime = 0;
+const unsigned long RECONNECT_INTERVAL = 3600000; // Reconnect every 1 hour
 
 void loop(){
     audio.loop();
     checkModeButton();
     checkVolumeButtons();
+    
+    // Auto reconnect every hour to prevent buffer issues
+    unsigned long currentMillis = millis();
+    if (currentMillis - lastReconnectTime > RECONNECT_INTERVAL) {
+        Serial.println("Periodic reconnect to refresh stream...");
+        audio.stopSong();
+        delay(200);
+        audio.connecttohost(audioStreams[currentStreamIndex].url);
+        lastReconnectTime = millis();
+    }
 }
