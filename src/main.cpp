@@ -137,23 +137,175 @@ void setup() {
         Serial.println("PSRAM initialization failed!");
     }
 
+    // Initialize I2C first
+    Wire.begin(OLED_SDA, OLED_SCL);
+    delay(100);
+
+    // Initialize OLED display
+    display.begin();
+    display.enableUTF8Print();
+    display.setContrast(255);
+    
+    // Show boot screen
+    display.clearBuffer();
+    display.setFont(u8g2_font_6x10_tf);
+    display.setCursor(0, 12);
+    display.print("ESP32 FM Radio");
+    display.drawHLine(0, 14, 128);
+    display.setFont(u8g2_font_5x8_tf);
+    display.setCursor(0, 28);
+    display.print("Starting...");
+    display.sendBuffer();
+    
+    Serial.println("OLED initialized");
+
     // WiFiManager - Auto connect or start config portal
-    Serial.println("Starting WiFiManager...");
-    wifiManager.setConfigPortalTimeout(180); // 3 minutes timeout for config portal
-    wifiManager.setDarkMode(true);
+    Serial.println("Starting WiFi...");
     
-    // Add custom parameters
-    WiFiManagerParameter customText("<p style='text-align:center;color:#4CAF50;'>ESP32 FM 收音机</p>");
-    wifiManager.addParameter(&customText);
+    // Try to connect to WiFi (will start config portal if no saved credentials)
+    wifiManager.setConfigPortalTimeout(10); // 10 seconds timeout
     
-    if (!wifiManager.autoConnect("ESP32-FM-Config", "12345678")) {
-        Serial.println("WiFiManager: Failed to connect or timeout");
-        delay(3000);
-        ESP.restart();
+    if (!wifiManager.autoConnect("ESP32-FM", "12345678")) {
+        // Connection failed or timeout - manually start AP and web server
+        Serial.println("WiFi connection failed, starting config AP manually...");
+        
+        // Start AP mode manually
+        WiFi.softAP("ESP32-FM", "12345678");
+        delay(1000);
+        
+        // Start web server for config portal
+        WebServer *configServer = new WebServer(80);
+        
+        // Config portal page with WiFi scan and connect
+        configServer->on("/", [configServer]() {
+            String html = F("<!DOCTYPE html><html><head><title>ESP32 FM 配网</title>");
+            html += F("<meta name='viewport' content='width=device-width, initial-scale=1'>");
+            html += F("<style>body{font-family:Arial;padding:20px;}h1{color:#4CAF50;}");
+            html += F(".btn{background:#4CAF50;color:white;padding:10px 20px;border:none;border-radius:5px;");
+            html += F("cursor:pointer;text-decoration:none;display:inline-block;margin:10px 0;}</style>");
+            html += F("</head><body>");
+            html += F("<h1>ESP32 FM 配网</h1>");
+            html += F("<p>热点：ESP32-FM | 密码：12345678</p>");
+            html += F("<p><a href='/wifi' class='btn'>扫描并配置 WiFi</a></p>");
+            html += F("<p><a href='/reset' class='btn' style='background:#f44336;'>恢复出厂设置</a></p>");
+            html += F("</body></html>");
+            configServer->send(200, "text/html", html);
+        });
+        
+        // WiFi scan and config page
+        configServer->on("/wifi", [configServer]() {
+            String html = F("<!DOCTYPE html><html><head><title>WiFi 配置</title>");
+            html += F("<meta name='viewport' content='width=device-width, initial-scale=1'>");
+            html += F("<style>body{font-family:Arial;padding:20px;}h2{color:#4CAF50;}");
+            html += F(".net{padding:10px;margin:5px 0;border:1px solid #ddd;border-radius:5px;}");
+            html += F("input{padding:8px;margin:5px;width:200px;}</style>");
+            html += F("</head><body>");
+            html += F("<h2>选择 WiFi 网络</h2>");
+            html += F("<form method='POST' action='/save'>");
+            html += F("<label>SSID:</label><br><input type='text' name='ssid'><br>");
+            html += F("<label>密码:</label><br><input type='password' name='pass'><br>");
+            html += F("<input type='submit' value='连接' class='btn' style='background:#4CAF50;color:white;padding:10px 20px;border:none;border-radius:5px;cursor:pointer;'>");
+            html += F("</form>");
+            html += F("<p><a href='/'>返回首页</a></p>");
+            html += F("</body></html>");
+            configServer->send(200, "text/html", html);
+        });
+        
+        // Save WiFi config
+        configServer->on("/save", [configServer]() {
+            if (configServer->hasArg("ssid") && configServer->hasArg("pass")) {
+                String ssid = configServer->arg("ssid");
+                String pass = configServer->arg("pass");
+                
+                String html = "<!DOCTYPE html><html><head><title>保存成功</title>";
+                html += "<meta http-equiv='refresh' content='3;url=/'>";
+                html += "<style>body{font-family:Arial;text-align:center;padding:50px;}";
+                html += "h1{color:#4CAF50;}</style></head><body>";
+                html += "<h1>WiFi 配置已保存!</h1>";
+                html += "<p>正在重启设备...</p>";
+                html += "<p>SSID: " + ssid + "</p>";
+                html += "</body></html>";
+                configServer->send(200, "text/html", html);
+                
+                // Save WiFi credentials using WiFi.begin
+                WiFi.begin(ssid.c_str(), pass.c_str());
+                
+                // Wait for connection
+                int retries = 10;
+                while (WiFi.status() != WL_CONNECTED && retries > 0) {
+                    delay(500);
+                    retries--;
+                }
+                
+                if (WiFi.status() == WL_CONNECTED) {
+                    Serial.println("WiFi connected successfully!");
+                    Serial.print("IP: ");
+                    Serial.println(WiFi.localIP());
+                }
+                
+                delay(2000);
+                ESP.restart();
+            }
+        });
+        
+        // Reset config
+        configServer->on("/reset", [configServer]() {
+            String html = F("<!DOCTYPE html><html><head><title>重置</title>");
+            html += F("<meta http-equiv='refresh' content='5;url=/'>");
+            html += F("<style>body{font-family:Arial;text-align:center;padding:50px;}");
+            html += F("h1{color:#f44336;}</style></head><body>");
+            html += F("<h1>配置已重置!</h1>");
+            html += F("<p>设备将在 5 秒后重启...</p>");
+            html += F("</body></html>");
+            configServer->send(200, "text/html", html);
+            
+            wifiManager.resetSettings();
+            
+            delay(5000);
+            ESP.restart();
+        });
+        
+        // Let WiFiManager handle the rest via its internal server
+        configServer->begin();
+        Serial.println("Config web server started on port 80");
+        
+        // Show config info on OLED
+        display.clearBuffer();
+        display.setFont(u8g2_font_6x10_tf);
+        display.setCursor(0, 12);
+        display.print("WiFi Config Mode");
+        display.drawHLine(0, 14, 128);
+        display.setFont(u8g2_font_5x8_tf);
+        display.setCursor(0, 28);
+        display.print("SSID: ESP32-FM");
+        display.setCursor(0, 42);
+        display.print("Pass: 12345678");
+        display.setCursor(0, 56);
+        display.print("IP: 192.168.4.1");
+        display.sendBuffer();
+        
+        Serial.println("AP started: ESP32-FM / 12345678");
+        Serial.print("AP IP: ");
+        Serial.println(WiFi.softAPIP());
+        Serial.println("Waiting for WiFi configuration...");
+        
+        // Keep AP and web server running
+        while (true) {
+            configServer->handleClient();
+            delay(100);
+            // Check if user connected and configured WiFi
+            if (WiFi.status() == WL_CONNECTED) {
+                Serial.println("WiFi connected during config mode!");
+                break;
+            }
+        }
+        
+        delete configServer;
     }
     
+    // WiFi connected successfully
     Serial.println("WiFi connected!");
-    Serial.print("IP address: ");
+    Serial.print("IP: ");
     Serial.println(WiFi.localIP());
     
     // Initialize NTP time synchronization
@@ -176,13 +328,10 @@ void setup() {
     } else {
         Serial.println("NTP time synchronization failed!");
     }
-    
-    // Initialize OLED display with Hardware I2C
+
+    // Initialize I2C for buttons
     Wire.begin(OLED_SDA, OLED_SCL);
-    display.begin();
-    display.enableUTF8Print(); // Enable UTF-8 support for Chinese characters
-    display.setContrast(255); // Set maximum contrast
-    
+
     // Initialize volume control buttons
     pinMode(VOLUME_UP_PIN, INPUT_PULLUP);
     pinMode(VOLUME_DOWN_PIN, INPUT_PULLUP);
@@ -366,28 +515,58 @@ void updateDisplay() {
 // Function to check mode button and toggle between volume/channel mode
 void checkModeButton() {
     static unsigned long lastDebounce = 0;
+    static unsigned long pressStartTime = 0;
     static bool lastState = HIGH;
     static bool buttonPressed = false;
-    
+    static bool longPressTriggered = false;
+
     int currentState = !digitalRead(MODE_BUTTON_PIN); // Active low
     unsigned long currentMillis = millis();
-    
+
     // Debounce
     if (currentState != lastState) {
         lastDebounce = currentMillis;
         lastState = currentState;
     }
-    
+
     if (currentMillis - lastDebounce > DEBOUNCE_DELAY) {
         if (currentState && !buttonPressed) {
-            // Button pressed - toggle mode
-            volumeMode = !volumeMode;
+            // Button just pressed
             buttonPressed = true;
-            
-            Serial.println(volumeMode ? "Mode: Volume" : "Mode: Channel");
+            pressStartTime = currentMillis;
+            longPressTriggered = false;
         } else if (!currentState && buttonPressed) {
             // Button released
             buttonPressed = false;
+            
+            // Check if it was a short press (not long press)
+            if (!longPressTriggered && currentMillis - pressStartTime < LONG_PRESS_THRESHOLD) {
+                // Short press - toggle mode
+                volumeMode = !volumeMode;
+                Serial.println(volumeMode ? "Mode: Volume" : "Mode: Channel");
+            }
+            longPressTriggered = false;
+        }
+        
+        // Check for long press (3 seconds for WiFi reset)
+        if (currentState && buttonPressed && !longPressTriggered) {
+            if (currentMillis - pressStartTime >= 3000) {
+                Serial.println("Long press detected! Resetting WiFi config...");
+
+                // Display reset message
+                display.clearBuffer();
+                display.setFont(u8g2_font_6x10_tf);
+                display.setCursor(0, 20);
+                display.print("Resetting WiFi...");
+                display.sendBuffer();
+
+                // Reset WiFi configuration
+                wifiManager.resetSettings();
+
+                longPressTriggered = true;
+                delay(2000);
+                ESP.restart();
+            }
         }
     }
 }
