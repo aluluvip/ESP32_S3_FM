@@ -14,6 +14,9 @@
 #define VOLUME_UP_PIN   40  // GPIO40 - Volume up button
 #define VOLUME_DOWN_PIN 39  // GPIO39 - Volume down button (short press: decrease volume, long press: mute)
 
+// Mode switch button
+#define MODE_BUTTON_PIN  0   // GPIO0 - Mode switch button (press to toggle volume/channel mode)
+
 // OLED configuration - Hardware I2C
 #define OLED_SDA 47      // GPIO41 - OLED SDA pin
 #define OLED_SCL 21      // GPIO21 - OLED SCL pin
@@ -67,14 +70,17 @@ const unsigned long WIFI_CHECK_INTERVAL = 5000;  // Check WiFi every 5 seconds
 // Scrolling text variables
 int scrollOffset = 0;
 
+// Mode switch variables
+bool volumeMode = true;  // true = 音量模式，false = 频道切换模式
+
 // Button timing constants
 const unsigned long LONG_PRESS_THRESHOLD = 800;  // 800ms for long press detection
 const unsigned long DEBOUNCE_DELAY = 50;         // 50ms debounce delay
-const unsigned long DOUBLE_CLICK_THRESHOLD = 300;  // 300ms for double click detection
 
 // Function declarations
 void updateDisplay();
 void checkVolumeButtons();
+void checkModeButton();
 void switchStream(int direction);
 
 // FreeRTOS task for display updates
@@ -181,6 +187,7 @@ void setup() {
     // Initialize volume control buttons
     pinMode(VOLUME_UP_PIN, INPUT_PULLUP);
     pinMode(VOLUME_DOWN_PIN, INPUT_PULLUP);
+    pinMode(MODE_BUTTON_PIN, INPUT_PULLUP);
     
     // 使用您现有的引脚配置设置音频
     audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
@@ -222,7 +229,7 @@ void updateDisplay() {
 
     // ========== 顶部状态栏 ==========
 
-    // WiFi 状态 (左侧) - 向右移动 1px
+    // WiFi 状态 (左侧)
     display.setFont(u8g2_font_open_iconic_www_1x_t);
     display.setCursor(4, 11);
     if (WiFi.status() == WL_CONNECTED) {
@@ -231,7 +238,17 @@ void updateDisplay() {
         display.print((char)0x42); // 断开连接图标
     }
 
-    // 频道信息 (中央) - 使用较小字体
+    // 模式指示器（WiFi 图标后）
+    display.setFont(u8g2_font_6x10_tf);
+    if (volumeMode) {
+        display.setCursor(16, 11);
+        display.print("VOL"); // 音量模式
+    } else {
+        display.setCursor(16, 11);
+        display.print("CH");  // 频道模式
+    }
+
+    // 频道信息 (中央)
     display.setFont(u8g2_font_6x10_tf);
     char channelStr[8];
     sprintf(channelStr, "CH.%02d", currentStreamIndex + 1);
@@ -347,6 +364,35 @@ void updateDisplay() {
     display.sendBuffer();
 }
 
+// Function to check mode button and toggle between volume/channel mode
+void checkModeButton() {
+    static unsigned long lastDebounce = 0;
+    static bool lastState = HIGH;
+    static bool buttonPressed = false;
+    
+    int currentState = !digitalRead(MODE_BUTTON_PIN); // Active low
+    unsigned long currentMillis = millis();
+    
+    // Debounce
+    if (currentState != lastState) {
+        lastDebounce = currentMillis;
+        lastState = currentState;
+    }
+    
+    if (currentMillis - lastDebounce > DEBOUNCE_DELAY) {
+        if (currentState && !buttonPressed) {
+            // Button pressed - toggle mode
+            volumeMode = !volumeMode;
+            buttonPressed = true;
+            
+            Serial.println(volumeMode ? "Mode: Volume" : "Mode: Channel");
+        } else if (!currentState && buttonPressed) {
+            // Button released
+            buttonPressed = false;
+        }
+    }
+}
+
 // Function to check volume control buttons and handle volume changes
 void checkVolumeButtons() {
     static unsigned long lastVolumeUpDebounce = 0;
@@ -357,16 +403,6 @@ void checkVolumeButtons() {
     static bool volumeDownPressed = false;
     static unsigned long volumeDownPressStartTime = 0;
     static bool muteTriggered = false;
-
-    // Click detection variables
-    static unsigned long lastVolumeUpClickTime = 0;
-    static unsigned long lastVolumeDownClickTime = 0;
-    static int volumeUpClickCount = 0;
-    static int volumeDownClickCount = 0;
-
-    // Action pending flags
-    static bool volumeUpPending = false;
-    static bool volumeDownPending = false;
 
     int currentVolume = audio.getVolume();
     unsigned long currentMillis = millis();
@@ -380,35 +416,25 @@ void checkVolumeButtons() {
 
     if (currentMillis - lastVolumeUpDebounce > DEBOUNCE_DELAY) {
         if (currentUpState && !volumeUpPressed) {
-            // Button just pressed - increment click count
+            // Button just pressed
             volumeUpPressed = true;
-            volumeUpClickCount++;
-            lastVolumeUpClickTime = currentMillis;
             
-            // Start timer to wait for potential double-click
-            volumeUpPending = true;
+            if (volumeMode) {
+                // 音量模式：增加音量
+                if (currentVolume < 21) {
+                    audio.setVolume(++currentVolume);
+                    Serial.printf("Volume increased to: %d\n", currentVolume);
+
+                }
+            } else {
+                // 频道模式：下一个频道
+                Serial.println("Next stream");
+                switchStream(1);
+            }
         } else if (!currentUpState && volumeUpPressed) {
             // Button released
             volumeUpPressed = false;
         }
-    }
-
-    // Check for double-click or execute single-click action
-    if (volumeUpPending && currentMillis - lastVolumeUpClickTime > DOUBLE_CLICK_THRESHOLD) {
-        if (volumeUpClickCount >= 2) {
-            // Double click detected - adjust volume up
-            if (currentVolume < 21) {
-                audio.setVolume(++currentVolume);
-                Serial.printf("Volume increased to: %d (double-click)\n", currentVolume);
-            }
-        } else {
-            // Single click confirmed - switch to next stream
-            Serial.println("Single click up - Next stream");
-            switchStream(1);
-        }
-        // Reset state
-        volumeUpPending = false;
-        volumeUpClickCount = 0;
     }
 
     // Check volume down button with debounce
@@ -420,43 +446,31 @@ void checkVolumeButtons() {
 
     if (currentMillis - lastVolumeDownDebounce > DEBOUNCE_DELAY) {
         if (currentDownState && !volumeDownPressed) {
-            // Button just pressed - increment click count
+            // Button just pressed
             volumeDownPressed = true;
-            volumeDownClickCount++;
-            lastVolumeDownClickTime = currentMillis;
-            
-            // Start timer to wait for potential double-click
-            volumeDownPending = true;
-            
-            // Record press start time for long-press mute
             volumeDownPressStartTime = currentMillis;
             muteTriggered = false;
+            
+            if (volumeMode) {
+                // 音量模式：减小音量
+                if (currentVolume > 0) {
+                    audio.setVolume(--currentVolume);
+                    Serial.printf("Volume decreased to: %d\n", currentVolume);
+
+                }
+            } else {
+                // 频道模式：上一个频道
+                Serial.println("Previous stream");
+                switchStream(-1);
+            }
         } else if (!currentDownState && volumeDownPressed) {
             // Button released
             volumeDownPressed = false;
         }
     }
 
-    // Check for double-click or execute single-click action
-    if (volumeDownPending && currentMillis - lastVolumeDownClickTime > DOUBLE_CLICK_THRESHOLD) {
-        if (volumeDownClickCount >= 2) {
-            // Double click detected - adjust volume down
-            if (currentVolume > 0) {
-                audio.setVolume(--currentVolume);
-                Serial.printf("Volume decreased to: %d (double-click)\n", currentVolume);
-            }
-        } else {
-            // Single click confirmed - switch to previous stream
-            Serial.println("Single click down - Previous stream");
-            switchStream(-1);
-        }
-        // Reset state
-        volumeDownPending = false;
-        volumeDownClickCount = 0;
-    }
-
-    // Check for long press (non-blocking) - only for volume down button
-    if (currentDownState && volumeDownPressed && !muteTriggered) {
+    // Check for long press (non-blocking) - only in volume mode
+    if (volumeMode && currentDownState && volumeDownPressed && !muteTriggered) {
         if (currentMillis - volumeDownPressStartTime >= LONG_PRESS_THRESHOLD) {
             // Long press: mute (set volume to 0)
             if (currentVolume > 0) {
@@ -464,9 +478,6 @@ void checkVolumeButtons() {
                 Serial.println("Volume muted (long press)");
                 muteTriggered = true;
             }
-            // Cancel pending action
-            volumeDownPending = false;
-            volumeDownClickCount = 0;
         }
     }
 }
@@ -502,5 +513,6 @@ void switchStream(int direction) {
 
 void loop(){
     audio.loop();
+    checkModeButton();
     checkVolumeButtons();
 }
