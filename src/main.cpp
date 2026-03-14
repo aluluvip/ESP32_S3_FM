@@ -5,7 +5,7 @@
 #include "time.h" // 包含时间库用于NTP同步
 #include "Wire.h" // 包含硬件 I2C 库
 #include <WebServer.h>
-#include <WiFiManager.h> // WiFi 配置管理
+#include <WiFiManager.h>
 #include <ArduinoJson.h>
 
 // Digital I/O used - using your existing wiring configuration
@@ -34,19 +34,33 @@ WiFiManager wifiManager;
 
 Audio audio;
 
+
+// Audio stream URLs with names
 // Audio stream structure
 struct AudioStream {
     const char* name;
     const char* url;
 };
-
-// Audio stream URLs with names
 AudioStream audioStreams[] = {
-    {"亳州交通音乐广播经典音乐", "https://lhttp-hw.qtfm.cn/live/647/64k.mp3"},
-    {"新闻广播", "https://lhttp-hw.qtfm.cn/live/15318194/64k.mp3"},
-    {"流行音乐", "https://lhttp-hw.qtfm.cn/live/20500104/64k.mp3"},
-    {"亳州交通音乐广播FM107.2", "https://lhttp-hw.qtfm.cn/live/20212419/64k.mp3"},
-    {"摇滚音乐", "https://lhttp-hw.qtfm.cn/live/5021902/64k.mp3"}
+    {"山西综合广播","https://lhttp-hw.qtfm.cn/live/20491/64k.mp3"},
+    {"山西文艺广播","https://lhttp-hw.qtfm.cn/live/20485/64k.mp3"},
+    {"山西交通广播","https://lhttp-hw.qtfm.cn/live/20007/64k.mp3"},
+    {"山西音乐广播","https://lhttp-hw.qtfm.cn/live/4932/64k.mp3"},
+    {"亳州交通音乐广播", "https://lhttp-hw.qtfm.cn/live/20212419/64k.mp3"},
+    {"合肥文艺广播", "https://lhttp-hw.qtfm.cn/live/1975/64k.mp3"},
+    {"安庆交通音乐广播", "https://lhttp-hw.qtfm.cn/live/1966/64k.mp3"},
+    {"芜湖音乐故事广播", "https://lhttp-hw.qtfm.cn/live/5028/64k.mp3"},
+    {"蚌埠经典1042音乐广播", "https://lhttp-hw.qtfm.cn/live/20152/64k.mp3"},
+    {"北京怀旧音乐广播","https://lhttp-hw.qtfm.cn/live/20211619/64k.mp3"},
+    {"重庆音乐广播","https://lhttp-hw.qtfm.cn/live/647/64k.mp3"},
+    {"福建音乐广播汽车音乐调频","https://lhttp-hw.qtfm.cn/live/4585/64k.mp3"},
+    {"福州音乐广播倾城893","https://lhttp-hw.qtfm.cn/live/4846/64k.mp3"},
+    {"广东音乐之声","https://lhttp.qingting.fm/live/1260/64k.mp3"},
+    {"云浮交通音乐广播","https://lhttp.qtfm.cn/live/5022441/64k.mp3"},
+    {"梅州电台客都之声 One Radio","https://lhttp.qingting.fm/live/5021942/64k.mp3"},
+    {"广州汽车音乐广播","https://lhttp.qingting.fm/live/20192/64k.mp3"},
+    {"滁州南谯应急广播", "https://lhttp-hw.qtfm.cn/live/20211575/64k.mp3"},
+    {"海峡之声新闻广播","https://lhttp-hw.qtfm.cn/live/1744/64k.mp3"}
 };
 const int NUM_STREAMS = sizeof(audioStreams) / sizeof(audioStreams[0]);
 int currentStreamIndex = 0;
@@ -129,7 +143,7 @@ void displayUpdateTask(void *pvParameters) {
 void setup() {
     Serial.begin(115200);
     
-    // Initialize PSRAM for m3u8 support
+    // Initialize PSRAM for better performance
     Serial.println("Initializing PSRAM...");
     if (psramInit()) {
         Serial.println("PSRAM initialized successfully!");
@@ -340,11 +354,14 @@ void setup() {
     // 使用您现有的引脚配置设置音频
     audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
     audio.setVolume(6); // 设置音频音量（0...21）
-
-    // Increase SSL timeout for m3u8 parsing
-    audio.setConnectionTimeout(5000, 10000); // Increase SSL timeout to 10 seconds
     
-    // Use a reliable HTTP stream URL (HTTPS may cause SSL issues for m3u8)
+    // Set buffer size for streaming
+    audio.setBufsize(0, 65535); // Set buffer size for streaming
+    
+    // Increase connection timeout
+    audio.setConnectionTimeout(8000, 15000); // Increase SSL timeout to 15 seconds
+    
+    // Use a reliable HTTP stream URL
     Serial.println("Connecting to audio stream...");
     
     // Connect to the first audio stream in the list
@@ -662,8 +679,7 @@ void checkVolumeButtons() {
 
 // Function to switch between audio streams
 void switchStream(int direction) {
-    // Stop current audio stream
-    audio.stopSong();
+    Serial.println("=== Switching stream ===");
 
     // Calculate new stream index
     currentStreamIndex += direction;
@@ -673,9 +689,22 @@ void switchStream(int direction) {
         currentStreamIndex = NUM_STREAMS - 1;
     }
 
+    // Stop current audio stream completely
+    audio.stopSong();
+    
+    // Clear I2S buffers by running audio loop with no data
+    Serial.println("Clearing audio buffers...");
+    for (int i = 0; i < 50; i++) {
+        audio.loop();
+        delay(20);
+    }
+    
     // Connect to new stream
     Serial.printf("Switching to stream %d: %s (%s)\n", currentStreamIndex + 1, audioStreams[currentStreamIndex].name, audioStreams[currentStreamIndex].url);
     audio.connecttohost(audioStreams[currentStreamIndex].url);
+    
+    // Wait for new stream to connect
+    delay(1000);
 
     // Reset playback start time
     playbackStartTime = millis();
@@ -683,8 +712,7 @@ void switchStream(int direction) {
     // Reset scroll offset when switching stations
     scrollOffset = 0;
 
-    // Show stream change on display
-    updateDisplay();
+    Serial.println("=== Stream switched ===");
 }
 
 
