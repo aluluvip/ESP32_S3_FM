@@ -422,8 +422,8 @@ void updateDisplay() {
 
     // 频道信息 (中央)
     display.setFont(u8g2_font_6x10_tf);
-    char channelStr[8];
-    sprintf(channelStr, "CH.%02d", currentStreamIndex + 1);
+    char channelStr[12];
+    sprintf(channelStr, "CH.%02d/%d", currentStreamIndex + 1, NUM_STREAMS);
     int channelWidth = display.getUTF8Width(channelStr);
     display.setCursor((128 - channelWidth) / 2, 11);
     display.print(channelStr);
