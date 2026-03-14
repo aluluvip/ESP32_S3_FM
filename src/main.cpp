@@ -6,7 +6,7 @@
 #include "Wire.h" // 包含硬件 I2C 库
 #include <WebServer.h>
 #include <WiFiManager.h>
-#include <ArduinoJson.h>
+#include <Preferences.h>#include <ArduinoJson.h>
 
 // Digital I/O used - using your existing wiring configuration
 #define I2S_DOUT      7
@@ -65,6 +65,7 @@ AudioStream audioStreams[] = {
 const int NUM_STREAMS = sizeof(audioStreams) / sizeof(audioStreams[0]);
 int currentStreamIndex = 0;
 
+Preferences preferences;
 // Removed volume display variables - no longer need fullscreen volume display
 
 // NTP time synchronization variables
@@ -364,7 +365,14 @@ void setup() {
     // Use a reliable HTTP stream URL
     Serial.println("Connecting to audio stream...");
     
-    // Connect to the first audio stream in the list
+    // Load saved station index from preferences
+    preferences.begin("esp32fm", false);
+    currentStreamIndex = preferences.getInt("station", 0);
+    if (currentStreamIndex >= NUM_STREAMS) currentStreamIndex = 0;
+    Serial.printf("Loaded saved station: %d\n", currentStreamIndex);
+    preferences.end();
+
+    // Connect to the saved audio stream
     audio.connecttohost(audioStreams[currentStreamIndex].url);
     Serial.printf("Connected to stream %d: %s (%s)\n", currentStreamIndex + 1, audioStreams[currentStreamIndex].name, audioStreams[currentStreamIndex].url);
 
@@ -379,7 +387,6 @@ void setup() {
         NULL          // Task handle
     );
     Serial.println("Display update task created!");
-
 }
 
 // Function to update OLED display with current status
@@ -710,7 +717,12 @@ void switchStream(int direction) {
     playbackStartTime = millis();
 
     // Reset scroll offset when switching stations
-    scrollOffset = 0;
+
+    // Save current station index to preferences
+    preferences.begin("esp32fm", false);
+    preferences.putInt("station", currentStreamIndex);
+    preferences.end();
+    Serial.printf("Saved station: %d\n", currentStreamIndex);    scrollOffset = 0;
 
     Serial.println("=== Stream switched ===");
 }
