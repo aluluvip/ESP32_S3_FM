@@ -6,7 +6,8 @@
 #include "Wire.h" // 包含硬件 I2C 库
 #include <WebServer.h>
 #include <WiFiManager.h>
-#include <Preferences.h>#include <ArduinoJson.h>
+#include <Preferences.h>
+#include <ArduinoJson.h>
 
 // Digital I/O used - using your existing wiring configuration
 #define I2S_DOUT      7
