@@ -173,13 +173,16 @@ void setup() {
     
     // Show boot screen
     display.clearBuffer();
-    display.setFont(u8g2_font_6x10_tf);
-    display.setCursor(0, 12);
-    display.print("ESP32 FM Radio");
-    display.drawHLine(0, 14, 128);
-    display.setFont(u8g2_font_5x8_tf);
-    display.setCursor(0, 28);
-    display.print("Starting...");
+    display.setFont(u8g2_font_wqy12_t_gb2312);
+    display.setCursor(20, 12);
+    display.print("ESP32网络收音机");
+    display.drawHLine(0, 16, 128);
+    display.setFont(u8g2_font_wqy12_t_gb2312);
+    display.setCursor(26, 38);
+    display.print("系统正在初始化");
+    display.setFont(u8g2_font_wqy12_t_gb2312);
+    display.setCursor(60, 60);
+    display.print("...");
     display.sendBuffer();
     
     Serial.println("OLED initialized");
@@ -423,10 +426,10 @@ void updateDisplay() {
     // 模式指示器（WiFi 图标后）
     display.setFont(u8g2_font_6x10_tf);
     if (volumeMode) {
-        display.setCursor(16, 11);
+        display.setCursor(42, 58);
         display.print("VOL"); // 音量模式
     } else {
-        display.setCursor(16, 11);
+        display.setCursor(45, 58);
         display.print("CH");  // 频道模式
     }
 
@@ -514,7 +517,10 @@ void updateDisplay() {
     // ========== 底部信息栏 ==========
     // 绘制分隔线
     display.drawHLine(1, 46, 126);
-    
+    // 绘制星期和功能之间分隔竖线
+    display.drawVLine(30, 46, 16);
+    // 绘制功能和时间之间分隔竖线
+    display.drawVLine(70, 46, 16);
     // 星期几 (左侧) - 英文显示，与时间字体一致
     display.setFont(u8g2_font_6x10_tf);
     const char* weekdays[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
