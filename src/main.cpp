@@ -69,7 +69,7 @@ Preferences preferences;
 // Removed volume display variables - no longer need fullscreen volume display
 
 // NTP time synchronization variables
-const char* ntpServer = "pool.ntp.org";
+const char* ntpServer = "ntp.aliyun.com";  // Use Alibaba NTP server for better connectivity in China
 const long gmtOffset_sec = 8 * 3600;  // UTC+8 for China
 const int daylightOffset_sec = 0;  // No daylight saving time in China
 struct tm timeinfo;
@@ -79,6 +79,7 @@ bool timeSynced = false;
 unsigned long playbackStartTime = 0;
 unsigned long lastNtpSync = 0;
 const unsigned long NTP_SYNC_INTERVAL = 3600000;  // Sync time every hour
+const unsigned long NTP_RETRY_INTERVAL = 30000;   // Retry every 30 seconds if not synced
 
 // WiFi reconnection variables
 unsigned long lastWifiCheck = 0;
@@ -129,10 +130,18 @@ void displayUpdateTask(void *pvParameters) {
         }
 
         // Update NTP time periodically
-        if (currentMillis - lastNtpSync > NTP_SYNC_INTERVAL) {
+        // If not synced, retry more frequently; otherwise sync every hour
+        unsigned long syncInterval = timeSynced ? NTP_SYNC_INTERVAL : NTP_RETRY_INTERVAL;
+        if (currentMillis - lastNtpSync > syncInterval) {
             configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
             if (getLocalTime(&timeinfo)) {
                 timeSynced = true;
+                Serial.println("NTP time synchronized successfully!");
+                char timeStr[20];
+                strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", &timeinfo);
+                Serial.printf("Current time: %s\n", timeStr);
+            } else {
+                Serial.println("NTP time sync retry...");
             }
             lastNtpSync = currentMillis;
         }
