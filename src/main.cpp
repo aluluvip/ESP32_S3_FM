@@ -35,7 +35,6 @@ WiFiManager wifiManager;
 
 Audio audio;
 
-
 // Audio stream URLs with names
 // Audio stream structure
 struct AudioStream {
@@ -43,6 +42,7 @@ struct AudioStream {
     const char* url;
 };
 AudioStream audioStreams[] = {
+    {"路路音乐广播站","http://192.168.2.240:8000/radio"},
     {"山西综合广播","https://lhttp-hw.qtfm.cn/live/20491/64k.mp3"},
     {"山西文艺广播","https://lhttp-hw.qtfm.cn/live/20485/64k.mp3"},
     {"山西交通广播","https://lhttp-hw.qtfm.cn/live/20007/64k.mp3"},
@@ -66,6 +66,25 @@ AudioStream audioStreams[] = {
 const int NUM_STREAMS = sizeof(audioStreams) / sizeof(audioStreams[0]);
 int currentStreamIndex = 0;
 
+// WiFi event handler
+void onWiFiEvent(WiFiEvent_t event) {
+    switch(event) {
+        case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
+            Serial.println("WiFi disconnected, reconnecting...");
+            audio.stopSong();  // Stop audio to prevent noise
+            WiFi.reconnect();
+            break;
+        case ARDUINO_EVENT_WIFI_STA_CONNECTED:
+            Serial.println("WiFi connected");
+            break;
+        case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+            Serial.printf("WiFi IP: %s\n", WiFi.localIP().toString().c_str());
+            // Reconnect audio stream after WiFi is connected (no delay needed)
+            audio.connecttohost(audioStreams[currentStreamIndex].url);
+            break;
+    }
+}
+
 Preferences preferences;
 // Removed volume display variables - no longer need fullscreen volume display
 
@@ -79,12 +98,8 @@ bool timeSynced = false;
 // Playback and time variables
 unsigned long playbackStartTime = 0;
 unsigned long lastNtpSync = 0;
-const unsigned long NTP_SYNC_INTERVAL = 3600000;  // Sync time every hour
+const unsigned long NTP_SYNC_INTERVAL = 7200000;  // Sync time every 2 hours (reduced from 1 hour)
 const unsigned long NTP_RETRY_INTERVAL = 30000;   // Retry every 30 seconds if not synced
-
-// WiFi reconnection variables
-unsigned long lastWifiCheck = 0;
-const unsigned long WIFI_CHECK_INTERVAL = 5000;  // Check WiFi every 5 seconds
 
 // Scrolling text variables
 int scrollOffset = 0;
@@ -108,39 +123,29 @@ void displayUpdateTask(void *pvParameters);
 // FreeRTOS task implementation for display updates
 void displayUpdateTask(void *pvParameters) {
     static int lastSecond = -1;
+    static unsigned long lastMillis = 0;
 
     while (true) {
         unsigned long currentMillis = millis();
 
-        // Check WiFi connection and reconnect if needed
-        if (currentMillis - lastWifiCheck > WIFI_CHECK_INTERVAL) {
-            if (WiFi.status() != WL_CONNECTED) {
-                Serial.println("WiFi disconnected! Reconnecting...");
-                WiFi.reconnect();
-            }
-            lastWifiCheck = currentMillis;
-        }
-
         // Only update when the second changes, once per second
         int currentSecond = (currentMillis / 1000) % 60;
         if (currentSecond != lastSecond) {
-            // Update the global timeinfo before updating display
+            // Update timeinfo before updating display
             getLocalTime(&timeinfo);
             updateDisplay();
             lastSecond = currentSecond;
+            lastMillis = currentMillis;
         }
 
-        // Update NTP time periodically
-        // If not synced, retry more frequently; otherwise sync every hour
+        // Update NTP time periodically (less frequent to reduce network load)
+        // If not synced, retry more frequently; otherwise sync every 2 hours
         unsigned long syncInterval = timeSynced ? NTP_SYNC_INTERVAL : NTP_RETRY_INTERVAL;
         if (currentMillis - lastNtpSync > syncInterval) {
             configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
             if (getLocalTime(&timeinfo)) {
                 timeSynced = true;
                 Serial.println("NTP time synchronized successfully!");
-                char timeStr[20];
-                strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", &timeinfo);
-                Serial.printf("Current time: %s\n", timeStr);
             } else {
                 Serial.println("NTP time sync retry...");
             }
@@ -187,6 +192,13 @@ void setup() {
     
     Serial.println("OLED initialized");
 
+    // Register WiFi event handler
+    WiFi.onEvent(onWiFiEvent);
+    
+    // Disable WiFi power save mode for better stability
+    WiFi.setSleep(false);
+    Serial.println("WiFi power save mode disabled");
+    
     // WiFiManager - Auto connect or start config portal
     Serial.println("Starting WiFi...");
     
@@ -369,8 +381,10 @@ void setup() {
     audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
     audio.setVolume(6); // 设置音频音量（0...21）
     
-    // Set buffer size for streaming
-    audio.setBufsize(0, 65535); // Set buffer size for streaming
+    // Set buffer size for streaming (increased for better stability)
+    // PSRAM is already enabled in platformio.ini, audio library uses it automatically
+    audio.setBufsize(32768, 65535);  // Increased I2S buffer and stream buffer
+    Serial.println("Audio buffer size set to 32768/65535");
     
     // Increase connection timeout
     audio.setConnectionTimeout(8000, 15000); // Increase SSL timeout to 15 seconds
@@ -394,7 +408,7 @@ void setup() {
     xTaskCreate(
         displayUpdateTask,
         "DisplayUpdateTask",
-        2048,        // Stack size
+        3072,        // Stack size (increased for stability)
         NULL,         // Parameters
         1,            // Priority (lower than audio)
         NULL          // Task handle
@@ -419,11 +433,18 @@ void updateDisplay() {
     display.setCursor(4, 11);
     if (WiFi.status() == WL_CONNECTED) {
         display.print((char)0x48); // WiFi 图标
+        // 显示 WiFi 信号强度 (RSSI)
+        display.setFont(u8g2_font_5x8_tf);
+        display.setCursor(14, 11);
+        int rssi = abs(WiFi.RSSI());  // 取绝对值，去掉负号
+        display.print(rssi);
+        display.print("dB");
+        display.setFont(u8g2_font_6x10_tf);
     } else {
         display.print((char)0x42); // 断开连接图标
     }
 
-    // 模式指示器（WiFi 图标后）
+    // 模式指示器（频道/音量）
     display.setFont(u8g2_font_6x10_tf);
     if (volumeMode) {
         display.setCursor(42, 58);
@@ -436,7 +457,7 @@ void updateDisplay() {
     // 频道信息 (中央)
     display.setFont(u8g2_font_6x10_tf);
     char channelStr[12];
-    sprintf(channelStr, "CH.%02d/%d", currentStreamIndex + 1, NUM_STREAMS);
+    sprintf(channelStr, "%02d/%d", currentStreamIndex + 1, NUM_STREAMS);
     int channelWidth = display.getUTF8Width(channelStr);
     display.setCursor((128 - channelWidth) / 2, 11);
     display.print(channelStr);
@@ -604,7 +625,7 @@ void checkModeButton() {
                 wifiManager.resetSettings();
 
                 longPressTriggered = true;
-                delay(2000);
+                // Restart immediately (no delay needed)
                 ESP.restart();
             }
         }
@@ -715,19 +736,19 @@ void switchStream(int direction) {
     // Stop current audio stream completely
     audio.stopSong();
     
-    // Clear I2S buffers by running audio loop with no data
+    // Clear I2S buffers quickly (reduced from 50 to 10 iterations)
     Serial.println("Clearing audio buffers...");
-    for (int i = 0; i < 50; i++) {
+    for (int i = 0; i < 10; i++) {
         audio.loop();
-        delay(20);
+        delay(10);
     }
     
     // Connect to new stream
     Serial.printf("Switching to stream %d: %s (%s)\n", currentStreamIndex + 1, audioStreams[currentStreamIndex].name, audioStreams[currentStreamIndex].url);
     audio.connecttohost(audioStreams[currentStreamIndex].url);
     
-    // Wait for new stream to connect
-    delay(1000);
+    // Minimal delay after connect (reduced from 1000ms to 200ms)
+    delay(200);
 
     // Reset playback start time
     playbackStartTime = millis();
